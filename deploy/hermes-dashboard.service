@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes Control dashboard (FastAPI + SPA on 127.0.0.1:8089)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/hermes-dashboard/backend
+ExecStart=/root/hermes-dashboard/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8089
+Restart=on-failure
+RestartSec=3
+Environment=HERMES_MODE=real
+# PORT/HOST are encoded in ExecStart; override if needed
+Environment=PORT=8089
+
+[Install]
+WantedBy=multi-user.target
