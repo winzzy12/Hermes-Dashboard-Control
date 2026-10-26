@@ -37,6 +37,7 @@ export default function Models() {
   const [rowTests, setRowTests] = useState<Record<string, ProbeResult>>({});
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [pendingActivate, setPendingActivate] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -75,6 +76,18 @@ export default function Models() {
       load();
     } catch (e) {
       toast.push("error", e instanceof Error ? e.message : "Failed to set default model");
+    }
+  };
+
+  const refreshActive = async () => {
+    setRefreshing(true);
+    try {
+      const active = await api.post<ModelsPayload["active"]>("/api/models/refresh");
+      setData((d) => (d ? { ...d, active } : d));
+    } catch (e) {
+      toast.push("error", e instanceof Error ? e.message : "Failed to refresh active endpoint");
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -218,6 +231,50 @@ export default function Models() {
 
           <Card>
             <CardHeader
+              title="Active endpoint models"
+              sub={`${data.active.base_url || "no endpoint"} · fetched live${data.active.age_seconds !== null ? ` ${data.active.age_seconds}s ago` : ""} (60s cache)`}
+              right={
+                <Button size="sm" onClick={refreshActive} loading={refreshing}>
+                  <Zap size={12} /> Refresh
+                </Button>
+              }
+            />
+            {data.active.status !== "operational" ? (
+              <div className="flex items-center gap-2 px-4 py-3">
+                <Badge tone={data.active.status === "offline" ? "error" : data.active.status === "degraded" ? "warning" : "muted"}>
+                  {data.active.status}
+                </Badge>
+                <span className="text-xs text-muted">{data.active.detail}</span>
+                <Button size="sm" variant="ghost" className="ml-auto" onClick={refreshActive} loading={refreshing}>
+                  Retry
+                </Button>
+              </div>
+            ) : data.active.models.length === 0 ? (
+              <Empty icon={<Cpu size={22} />} title="Endpoint returned no models" sub="The endpoint is reachable but reported an empty model list." />
+            ) : (
+              <>
+                {data.config.default_model && !data.active.models.includes(data.config.default_model) && (
+                  <p className="border-b border-line px-4 py-1.5 text-xxs text-muted">
+                    Default model <span className="font-mono">{data.config.default_model}</span> is not in the
+                    endpoint's public list (route name) — it still works as default.
+                  </p>
+                )}
+                <ul className="max-h-72 divide-y divide-line overflow-y-auto">
+                  {data.active.models.map((m) => (
+                    <li key={m} className="flex items-center gap-3 px-4 py-2">
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs">{m}</span>
+                      {m === data.config.default_model && (
+                        <Badge tone="accent"><Star size={9} className="mr-1 inline" />default</Badge>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </Card>
+
+          <Card>
+            <CardHeader
               title="Custom models"
               sub="Named endpoints you can add (base URL + API key + model). Keys are stored in ~/.hermes/.env and never shown again."
               right={
@@ -279,11 +336,13 @@ export default function Models() {
           {data.providers.length === 0 ? (
             <Empty icon={<Cpu size={22} />} title="No provider model cache" sub="Hermes has not cached a model list yet. Run a chat or `hermes model` once." />
           ) : (
-            data.providers.map((p) => (
+            data.providers.map((p) => {
+              const isActive = p.base_url && data.active.base_url && p.base_url.replace(/\/$/, "") === data.active.base_url.replace(/\/$/, "");
+              return (
               <Card key={p.base_url + p.provider}>
                 <CardHeader
-                  title={<span className="capitalize">{p.provider}</span>}
-                  sub={`${p.models.length} models reported by the provider${p.age_hours !== null ? ` · cached ${p.age_hours}h ago` : ""}`}
+                  title={<span className="capitalize">{p.provider}{isActive ? " · active endpoint" : " · other endpoint"}</span>}
+                  sub={`${p.models.length} models reported by the provider${p.age_hours !== null ? ` · cached ${p.age_hours}h ago` : ""} (Hermes cache — not live)`}
                 />
                 <ul className="divide-y divide-line">
                   {p.models.map((m) => (
@@ -300,7 +359,8 @@ export default function Models() {
                   ))}
                 </ul>
               </Card>
-            ))
+              );
+            })
           )}
           <p className="text-xxs text-muted">
             Changing the default model runs <code>hermes config set model.default</code> on the agent and affects every

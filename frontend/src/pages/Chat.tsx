@@ -4,7 +4,7 @@ import {
   Plus, Send, Square, Trash2, MessageSquare, Pencil, RefreshCw, Bot,
 } from "lucide-react";
 import { api, fmtTime } from "../api";
-import type { ChatMessage, Conversation } from "../types";
+import type { ChatMessage, Conversation, ModelsPayload } from "../types";
 import { Markdown } from "../Markdown";
 import { Badge, Button, Empty, Input, Spinner, Textarea, useToast } from "../ui";
 
@@ -19,7 +19,9 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [model, setModel] = useState(defaultModel);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [endpointModels, setEndpointModels] = useState<string[]>([]);
+  const [aliasModels, setAliasModels] = useState<{ name: string; model: string }[]>([]);
+  const [fallbackModels, setFallbackModels] = useState<string[]>([]);
   const [connected, setConnected] = useState<boolean | null>(null);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
@@ -63,13 +65,24 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
     loadConvs(search);
   }, [loadConvs, search]);
 
-  // Load available models for the selector (real provider list)
+  // Load models for the selector: live ACTIVE endpoint list + custom aliases;
+  // falls back to the Hermes provider cache only when the live list is empty.
   useEffect(() => {
     api
-      .get<{ providers: { models: string[] }[]; config: { default_model: string } }>("/api/models")
+      .get<ModelsPayload>("/api/models")
       .then((d) => {
-        setAvailableModels(d.providers.flatMap((p) => p.models).sort());
-        if (!defaultModel && d.config.default_model) setModel(d.config.default_model);
+        const live = d.active?.models ?? [];
+        setEndpointModels(live);
+        const aliases = d.custom_models.map((c) => ({ name: c.name, model: c.model }));
+        setAliasModels(aliases);
+        const cached = d.providers.flatMap((p) => p.models).sort();
+        setFallbackModels(live.length ? [] : cached);
+        // Only pre-select the default if it is actually a selectable option (a route-name
+        // default may not appear in the endpoint's public list). Otherwise keep "" (= default).
+        if (!defaultModel && d.config.default_model) {
+          const selectable = new Set([...live, ...aliases.map((a) => a.name), ...(live.length ? [] : cached)]);
+          setModel(selectable.has(d.config.default_model) ? d.config.default_model : "");
+        }
       })
       .catch(() => {});
   }, [defaultModel]);
@@ -228,9 +241,27 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
             className="h-6 max-w-40 rounded border border-line bg-bg px-1 text-xxs"
           >
             <option value="">default model</option>
-            {availableModels.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
+            {endpointModels.length > 0 && (
+              <optgroup label="Active endpoint (live)">
+                {endpointModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </optgroup>
+            )}
+            {aliasModels.length > 0 && (
+              <optgroup label="Custom aliases">
+                {aliasModels.map((a) => (
+                  <option key={a.name} value={a.name}>{a.name} → {a.model}</option>
+                ))}
+              </optgroup>
+            )}
+            {endpointModels.length === 0 && fallbackModels.length > 0 && (
+              <optgroup label="Hermes cache (endpoint unreachable)">
+                {fallbackModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </optgroup>
+            )}
           </select>
           <button aria-label="Reload messages" onClick={() => convId && loadMessages(convId)} className="text-muted hover:text-text">
             <RefreshCw size={13} />

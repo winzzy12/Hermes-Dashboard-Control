@@ -15,7 +15,18 @@ def get_models(user: dict = Depends(security.require_user)):
     except hermes_models.ModelsError as e:
         raise HTTPException(status_code=502, detail=str(e))
     providers = hermes_models.provider_models()
-    return {"config": mc, "providers": providers, "custom_models": hermes_models.custom_models()}
+    return {
+        "config": mc,
+        "providers": providers,
+        "active": hermes_models.active_provider_models(),
+        "custom_models": hermes_models.custom_models(),
+    }
+
+
+@router.post("/refresh")
+def refresh_models(user: dict = Depends(security.require_user)):
+    """Force a live re-fetch of the active endpoint's model list."""
+    return hermes_models.active_provider_models(force=True)
 
 
 @router.post("/test")

@@ -10,6 +10,7 @@ connectivity test ONLY; they are never returned, logged, or stored.
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -76,11 +77,15 @@ def _load_config() -> dict:
 
 def model_config() -> dict:
     mc = _load_config()
+    env = _env_map()
+    key_env = mc.get("key_env") or ""
+    has_key = bool(env.get(key_env)) if key_env else bool(_resolve_secret(mc.get("api_key", "")))
     return {
         "default_model": mc.get("default", ""),
         "provider": mc.get("provider", ""),
         "base_url": mc.get("base_url", ""),
-        "has_api_key": bool(_resolve_secret(mc.get("api_key", ""))),
+        "has_api_key": has_key,
+        "key_env": key_env,
     }
 
 
@@ -110,41 +115,95 @@ def provider_models() -> list[dict]:
 
 
 def set_default_model(name: str) -> None:
-    """Set the agent's default model via the hermes CLI (never edit config.yaml by hand)."""
+    """Set the agent's default model via the hermes CLI (never edit config.yaml by hand).
+
+    The default resolves against the ACTIVE route, so validate against the active
+    endpoint's live model list when we can reach it (the union of all provider
+    caches would allow models the active endpoint does not serve)."""
     from . import cli
-    known = {m for entry in provider_models() for m in entry.get("models", [])}
-    if known and name not in known:
-        raise ModelsError(f"model '{name}' is not in the provider's reported model list")
+    live = active_provider_models().get("models") or []
+    mc = _load_config()
+    if live:
+        if name not in live and name != mc.get("default"):
+            raise ModelsError(
+                f"model '{name}' is not served by the active endpoint — pick one of its "
+                f"{len(live)} models (or activate a custom model for a different endpoint)"
+            )
+    else:
+        known = {m for entry in provider_models() for m in entry.get("models", [])}
+        if known and name not in known:
+            raise ModelsError(f"model '{name}' is not in the provider's reported model list")
     cli.run_cli_checked(["config", "set", "model.default", name], timeout=60)
 
 
-def _probe(base: str, key: str) -> dict:
-    """GET {base}/models with the given key (server-side only)."""
+def _fetch_models(base: str, key: str) -> dict:
+    """GET {base}/models and return the model id list (server-side key only)."""
     if not base:
-        return {"status": "unknown", "latency_ms": 0, "detail": "no base_url configured"}
+        return {"status": "unknown", "latency_ms": 0, "detail": "no base_url configured", "models": []}
     url = base if base.endswith("/models") else f"{base}/models"
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     start = time.monotonic()
     try:
-        r = httpx.get(url, headers=headers, timeout=10)
+        r = httpx.get(url, headers=headers, timeout=15)
         latency = round((time.monotonic() - start) * 1000)
         if r.status_code == 200:
             try:
-                n = len(r.json().get("data", []))
+                ids = sorted({m.get("id") for m in r.json().get("data", [])
+                              if isinstance(m, dict) and m.get("id")})
             except Exception:
-                n = None
+                ids = []
             return {"status": "operational", "latency_ms": latency,
-                    "detail": f"HTTP 200" + (f", {n} models" if n is not None else "")}
-        return {"status": "degraded", "latency_ms": latency, "detail": f"HTTP {r.status_code}"}
+                    "detail": f"HTTP 200, {len(ids)} models", "models": ids}
+        return {"status": "degraded", "latency_ms": latency, "detail": f"HTTP {r.status_code}", "models": []}
     except httpx.HTTPError as e:
-        latency = round((time.monotonic() - start) * 1000)
-        return {"status": "offline", "latency_ms": latency, "detail": f"{type(e).__name__}"}
+        return {"status": "offline", "latency_ms": round((time.monotonic() - start) * 1000),
+                "detail": f"{type(e).__name__}", "models": []}
+
+
+def _probe(base: str, key: str) -> dict:
+    """Connectivity probe (status + latency, no model list)."""
+    r = _fetch_models(base, key)
+    return {k: r[k] for k in ("status", "latency_ms", "detail")}
 
 
 def test_provider() -> dict:
     """Connectivity test of the ACTIVE provider (key resolved server-side)."""
     mc = _load_config()
-    return _probe((mc.get("base_url") or "").rstrip("/"), _resolve_secret(mc.get("api_key", "")))
+    return _probe((mc.get("base_url") or "").rstrip("/"), _active_key())
+
+
+# Live view of the ACTIVE endpoint's model list. Hermes' own provider_models_cache.json
+# is keyed by credential fingerprint we must not forge, so the dashboard fetches the
+# active endpoint itself and keeps a short in-memory TTL (never writes Hermes files).
+_ACTIVE_LIVE_TTL = 60
+_active_live: dict = {}
+_live_lock = threading.Lock()
+
+
+def _active_key() -> str:
+    mc = _load_config()
+    env = _env_map()
+    return env.get(mc.get("key_env") or "", "") or _resolve_secret(mc.get("api_key") or "")
+
+
+def active_provider_models(force: bool = False) -> dict:
+    """Model list of the ACTIVE endpoint, fetched live (60s in-memory cache)."""
+    mc = _load_config()
+    base = (mc.get("base_url") or "").rstrip("/")
+    if not base:
+        return {"base_url": "", "status": "unknown", "detail": "no base_url configured",
+                "models": [], "fetched_at": None, "age_seconds": None, "latency_ms": 0}
+    now = time.time()
+    with _live_lock:
+        c = _active_live
+        if not force and c.get("base") == base and c.get("data") and now - c["at"] < _ACTIVE_LIVE_TTL:
+            data = c["data"]
+            return {**data, "age_seconds": round(now - c["at"])}
+    result = _fetch_models(base, _active_key())
+    entry = {"base_url": base, "fetched_at": time.time(), **result}
+    with _live_lock:
+        _active_live.update({"at": time.time(), "base": base, "data": entry})
+    return {**entry, "age_seconds": 0}
 
 
 # ------------------------------------------------------- named custom models

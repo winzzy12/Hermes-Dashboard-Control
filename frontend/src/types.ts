@@ -100,6 +100,16 @@ export type ModelsPayload = {
     provider: string;
     base_url: string;
     has_api_key: boolean;
+    key_env: string;
+  };
+  active: {
+    base_url: string;
+    status: string;
+    detail: string;
+    models: string[];
+    fetched_at: number | null;
+    age_seconds: number | null;
+    latency_ms: number;
   };
   providers: {
     provider: string;
