@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import auth, chat, cronjobs, models, overview, settings, skills, system
+from .routers import auth, chat, cronjobs, files, models, overview, settings, skills, system
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("hermes-dashboard")
@@ -34,6 +34,7 @@ app.include_router(skills.router)
 app.include_router(cronjobs.router)
 app.include_router(models.router)
 app.include_router(system.router)
+app.include_router(files.router)
 app.include_router(settings.router)
 
 

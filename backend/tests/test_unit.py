@@ -107,6 +107,78 @@ def test_schedule_preview_invalid():
     assert not r["valid"] and r["error"]
 
 
+# ---------------------------------------------------------------- files
+
+def test_files_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.DB_PATH", tmp_path / "t.db")
+    db._initialized = False
+    if getattr(db._local, "conn", None) is not None:
+        db._local.conn.close()
+        db._local.conn = None
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app import config
+
+    root = tmp_path / "fsroot"
+    (root / "sub").mkdir(parents=True)
+    (root / "hello.txt").write_text("hello world")
+    (root / "sub" / "a.bin").write_bytes(b"\x00\x01\x02")
+
+    client = TestClient(app)
+    with client:
+        # unauthenticated -> 401
+        assert client.get(f"/api/files?path={root}").status_code == 401
+
+        uid = db.create_user("wanz", security.hash_password("x"))
+        token = security.make_token(uid, "wanz", 1)
+        client.cookies.set(config.COOKIE_NAME, token)
+
+        # list
+        r = client.get(f"/api/files?path={root}")
+        assert r.status_code == 200
+        body = r.json()
+        names = [e["name"] for e in body["entries"]]
+        assert "sub" in names and "hello.txt" in names
+        assert body["parent"] == str(root.parent)
+
+        # view text + binary
+        v = client.get(f"/api/files/view?path={root}/hello.txt").json()
+        assert v["binary"] is False and v["content"] == "hello world"
+        b = client.get(f"/api/files/view?path={root}/sub/a.bin").json()
+        assert b["binary"] is True and b["content"] is None
+
+        # edit: overwrite without confirm -> 400, with confirm -> ok
+        r = client.put("/api/files", json={"path": f"{root}/hello.txt", "content": "new"})
+        assert r.status_code == 400
+        r = client.put("/api/files", json={"path": f"{root}/hello.txt", "content": "new", "confirm": True})
+        assert r.status_code == 200
+        assert (root / "hello.txt").read_text() == "new"
+
+        # upload: ok, then duplicate -> 409
+        files = {"file": ("up.txt", b"upload-data", "text/plain")}
+        r = client.post(f"/api/files/upload?path={root}", files=files)
+        assert r.status_code == 200
+        assert (root / "up.txt").read_bytes() == b"upload-data"
+        r = client.post(f"/api/files/upload?path={root}", files=files)
+        assert r.status_code == 409
+
+        # download
+        r = client.get(f"/api/files/download?path={root}/up.txt")
+        assert r.status_code == 200 and r.content == b"upload-data"
+
+        # delete: without confirm -> 400, with confirm -> gone
+        r = client.delete(f"/api/files?path={root}/up.txt")
+        assert r.status_code == 400
+        r = client.delete(f"/api/files?path={root}/sub&confirm=true")
+        assert r.status_code == 200 and not (root / "sub").exists()
+
+        # protected path
+        assert client.delete("/api/files?path=/&confirm=true").status_code == 403
+
+        # bad path
+        assert client.get(f"/api/files?path={root}/nope").status_code == 404
+
+
 # ---------------------------------------------------------------- skills
 
 def test_frontmatter():

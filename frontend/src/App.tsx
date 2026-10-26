@@ -10,6 +10,7 @@ import Chat from "./pages/Chat";
 import Recents from "./pages/Recents";
 import Skills from "./pages/Skills";
 import Cronjobs from "./pages/Cronjobs";
+import Files from "./pages/Files";
 import Models from "./pages/Models";
 import System from "./pages/System";
 import Settings from "./pages/Settings";
@@ -78,6 +79,7 @@ export default function App() {
             <Route path="/skills" element={<Skills />} />
             <Route path="/cronjobs" element={<Cronjobs />} />
             <Route path="/models" element={<Models />} />
+            <Route path="/files" element={<Files />} />
             <Route path="/system" element={<System />} />
             <Route path="/settings" element={<Settings user={ANON} onUserUpdate={setUser} />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />

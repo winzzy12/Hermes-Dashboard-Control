@@ -164,3 +164,30 @@ export type SchedulePreview = {
   next: string[];
   error?: string;
 };
+
+export type FileEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number | null;
+  mtime: number;
+  mode: string;
+};
+
+export type FileListPayload = {
+  path: string;
+  parent: string | null;
+  entries: FileEntry[];
+  truncated: boolean;
+};
+
+export type FileViewPayload = {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+  binary: boolean;
+  content: string | null;
+  truncated: boolean;
+  encoding: string | null;
+};
