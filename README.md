@@ -1,5 +1,7 @@
 # Hermes Control
 
+**Version: v1.0.0** (shown in the sidebar footer and `/api/health`)
+
 Centralized dashboard for the local **Hermes Agent** — chat, skills, cronjobs, models, and
 system monitoring in a Linear-inspired interface.
 

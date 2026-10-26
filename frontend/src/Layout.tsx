@@ -103,6 +103,13 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 
 export function Layout({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("hd-sidebar") === "collapsed");
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    fetch("/api/health", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((d) => setVersion(d.version || ""))
+      .catch(() => {});
+  }, []);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -162,6 +169,11 @@ export function Layout({ user, onLogout }: { user: User; onLogout: () => void })
               <p className="truncate text-xxs text-muted">@{user.username}</p>
             </div>
           </div>
+        )}
+        {version && (
+          <p className={`mt-0.5 text-center text-xxs text-muted/60 ${collapsed ? "px-0" : "px-2"}`} title={`Hermes Control v${version}`}>
+            v{version}
+          </p>
         )}
       </div>
     </div>

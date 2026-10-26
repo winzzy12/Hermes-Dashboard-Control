@@ -48,7 +48,8 @@ def startup() -> None:
 @app.get("/api/health")
 def api_health():
     """Unauthenticated liveness of the dashboard process itself."""
-    return {"ok": True, "mode": config.MODE}
+    from .version import __version__
+    return {"ok": True, "mode": config.MODE, "version": __version__}
 
 
 # ------------------------------------------------------------- SPA serving
