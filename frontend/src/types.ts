@@ -108,6 +108,15 @@ export type ModelsPayload = {
     fetched_at: number | null;
     age_hours: number | null;
   }[];
+  custom_models: {
+    name: string;
+    model: string;
+    provider: string;
+    base_url: string;
+    key_env: string;
+    has_key: boolean;
+    is_default: boolean;
+  }[];
 };
 
 export type HealthService = {
