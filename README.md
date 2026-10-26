@@ -21,20 +21,54 @@ structure, and feature list; dev/build commands are the framework equivalents.
 
 ## Quick start (production-style, verified)
 
-```bash
 # 1. backend
+```bash
 cd backend
 python3.12 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+```
 
 # 2. frontend
+```
 cd ../frontend
 npm install
-npm run build          # tsc --noEmit + vite build → dist/
+npm run build   
+```
+# tsc --noEmit + vite build → dist/
 
 # 3. run (serves API + SPA on 127.0.0.1:8089)
+```
 cd ../backend
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8089
+```
+
+# 4. run (systemd)
+```
+sudo nano /etc/systemd/system/hermes-dashboard.service
+```
+```
+
+[Unit]
+Description=Hermes Dashboard Control Backend
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Hermes-Dashboard-Control/backend
+ExecStart=/root/Hermes-Dashboard-Control/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8089
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+```
+sudo systemctl daemon-reload
+sudo systemctl enable --now hermes-dashboard
+```
+```
+sudo systemctl status hermes-dashboard
 ```
 
 Open **http://localhost:8089** — first run shows *first-run setup* to create the admin
