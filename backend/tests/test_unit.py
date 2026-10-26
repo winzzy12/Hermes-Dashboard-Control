@@ -179,6 +179,25 @@ def test_files_endpoints(tmp_path, monkeypatch):
         assert client.get(f"/api/files?path={root}/nope").status_code == 404
 
 
+# ---------------------------------------------------------------- chat runner
+
+def test_parse_jsonl_line():
+    from app.hermes.chatrunner import parse_jsonl_line
+    assert parse_jsonl_line("") is None
+    assert parse_jsonl_line("not json") is None
+    ev = parse_jsonl_line('{"type": "system", "subtype": "init", "model": "m1", "session_id": "s1", "timestamp": 1}')
+    assert ev == {"event": "init", "data": {"model": "m1", "session_id": "s1"}}
+    ev = parse_jsonl_line('{"type": "text", "text": "hi", "timestamp": 1}')
+    assert ev == {"event": "delta", "data": {"t": "hi"}}
+    ev = parse_jsonl_line('{"type": "tool_use", "name": "terminal", "timestamp": 1}')
+    assert ev["event"] == "tool" and ev["data"]["state"] == "started" and ev["data"]["name"] == "terminal"
+    ev = parse_jsonl_line('{"type": "tool_result", "name": "terminal", "is_error": false, "duration_ms": 5, "timestamp": 1}')
+    assert ev["data"]["state"] == "done" and ev["data"]["is_error"] is False
+    ev = parse_jsonl_line('{"type": "result", "text": "OK", "session_id": "s2", "exit_code": 0, "tokens": {"total": 3}, "timestamp": 1}')
+    assert ev["event"] == "done" and ev["data"]["text"] == "OK" and ev["data"]["session_id"] == "s2"
+    assert parse_jsonl_line('{"type": "something_else", "timestamp": 1}') is None
+
+
 # ---------------------------------------------------------------- skills
 
 def test_frontmatter():

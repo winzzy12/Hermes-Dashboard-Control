@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  Plus, Send, Square, Trash2, MessageSquare, Pencil, RefreshCw, Bot,
+  Plus, Send, Square, Trash2, MessageSquare, Pencil, RefreshCw, Bot, Wrench,
 } from "lucide-react";
 import { api, fmtTime } from "../api";
 import type { ChatMessage, Conversation, ModelsPayload } from "../types";
@@ -19,6 +19,8 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [model, setModel] = useState(defaultModel);
+  const [reasoning, setReasoning] = useState("minimal");
+  const [liveTool, setLiveTool] = useState<Record<number, string | null>>({});
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
   const [aliasModels, setAliasModels] = useState<{ name: string; model: string }[]>([]);
   const [fallbackModels, setFallbackModels] = useState<string[]>([]);
@@ -27,6 +29,7 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamAbort = useRef<AbortController | null>(null);
 
   // Prefill composer when arriving from Skills ("Run via chat")
   useEffect(() => {
@@ -93,14 +96,15 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
     else setMessages([]);
   }, [convId, loadMessages]);
 
-  // Poll while something is pending/running
+  // Poll while something is pending/running — except while THIS client owns the
+  // stream (the SSE feed is the source of truth and the DB row is still empty).
   useEffect(() => {
     const busy = messages.some((m) => m.status === "pending" || m.status === "running");
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
-    if (busy && convId) {
+    if (busy && convId && streamAbort.current === null) {
       pollRef.current = setInterval(() => loadMessages(convId, true), 1500);
     }
     return () => {
@@ -124,39 +128,98 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
     }
   };
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || !convId) return;
     setInput("");
+    const now = Date.now() / 1000;
+    const userRow = { id: -Date.now(), conversation_id: convId, role: "user" as const, content: text, status: "done" as const, error: null, model, hermes_session_id: null, created_at: now, finished_at: now };
+    const asstRow = { id: userRow.id + 1, conversation_id: convId, role: "assistant" as const, content: "", status: "running" as const, error: null, model, hermes_session_id: null, created_at: now, finished_at: null };
+    setMessages((ms) => [...ms, userRow as ChatMessage, asstRow as ChatMessage]);
+    let targetId = asstRow.id;
+    const ac = new AbortController();
+    streamAbort.current = ac;
     try {
-      await api.post(`/api/chat/conversations/${convId}/messages`, { content: text, model });
-      await loadMessages(convId, true);
+      const res = await fetch(`/api/chat/conversations/${convId}/messages`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: text, model, reasoning }),
+        signal: ac.signal,
+      });
+      if (!res.ok || !res.body) {
+        const errBody = await res.json().catch(() => null);
+        throw new Error(errBody?.detail ?? `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          let event = "";
+          const dataLines: string[] = [];
+          for (const ln of frame.split("\n")) {
+            if (ln.startsWith("event:")) event = ln.slice(6).trim();
+            else if (ln.startsWith("data:")) dataLines.push(ln.slice(5).trim());
+          }
+          if (!event || dataLines.length === 0) continue;
+          let data: any;
+          try { data = JSON.parse(dataLines.join("\n")); } catch { continue; }
+          if (event === "init" && data.message_id) {
+            targetId = data.message_id;
+            setMessages((ms) => ms.map((m) => (m.id === asstRow.id ? { ...m, id: data.message_id } : m)));
+          } else if (event === "delta") {
+            setMessages((ms) => ms.map((m) => (m.id === targetId ? { ...m, content: m.content + (data.t || "") } : m)));
+          } else if (event === "tool") {
+            setLiveTool((lt) => ({ ...lt, [targetId]: data.state === "started" ? data.name : null }));
+          } else if (event === "done") {
+            setMessages((ms) => ms.map((m) => (m.id === targetId ? { ...m, status: "done", content: data.text || m.content, finished_at: Date.now() / 1000 } : m)));
+            setLiveTool((lt) => ({ ...lt, [targetId]: null }));
+          } else if (event === "stopped") {
+            setMessages((ms) => ms.map((m) => (m.id === targetId ? { ...m, status: "stopped", content: data.content ?? m.content, finished_at: Date.now() / 1000 } : m)));
+          } else if (event === "error") {
+            setMessages((ms) => ms.map((m) => (m.id === targetId ? { ...m, status: "error", error: data.detail || "Generation failed", finished_at: Date.now() / 1000 } : m)));
+          }
+        }
+      }
+      // Reconcile with the DB (session id, model, final content)
+      setTimeout(() => convId && loadMessages(convId, true), 300);
     } catch (e) {
-      toast.push("error", e instanceof Error ? e.message : "Failed to send");
-      setInput(text);
+      const aborted = e instanceof DOMException && e.name === "AbortError";
+      if (aborted) {
+        setMessages((ms) => ms.map((m) => (m.id === targetId ? { ...m, status: "stopped", finished_at: Date.now() / 1000 } : m)));
+        setTimeout(() => convId && loadMessages(convId, true), 1500);
+      } else {
+        setMessages((ms) => ms.map((m) => (m.id === targetId ? { ...m, status: "error", error: e instanceof Error ? e.message : "Failed to send", finished_at: Date.now() / 1000 } : m)));
+        toast.push("error", e instanceof Error ? e.message : "Failed to send");
+        setInput(text);
+      }
+    } finally {
+      streamAbort.current = null;
     }
   };
 
   const stop = async (msgId: number) => {
     try {
       await api.post(`/api/chat/messages/${msgId}/stop`);
-      if (convId) loadMessages(convId, true);
     } catch {
       toast.push("error", "Failed to stop");
     }
+    streamAbort.current?.abort();
   };
 
-  const retry = async (m: ChatMessage) => {
+  const retry = (m: ChatMessage) => {
     if (!convId) return;
     const idx = messages.findIndex((x) => x.id === m.id);
     const userMsg = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
     if (!userMsg) return;
-    try {
-      await api.post(`/api/chat/conversations/${convId}/messages`, { content: userMsg.content, model });
-      await loadMessages(convId, true);
-    } catch (e) {
-      toast.push("error", e instanceof Error ? e.message : "Retry failed");
-    }
+    send(userMsg.content);
   };
 
   const removeConv = async (id: string) => {
@@ -263,6 +326,19 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
               </optgroup>
             )}
           </select>
+          <select
+            aria-label="Reasoning"
+            title="Thinking effort — lower = faster first token"
+            value={reasoning}
+            onChange={(e) => setReasoning(e.target.value)}
+            className="h-6 max-w-32 rounded border border-line bg-bg px-1 text-xxs"
+          >
+            <option value="minimal">minimal thinking</option>
+            <option value="none">no thinking</option>
+            <option value="low">low thinking</option>
+            <option value="medium">medium thinking</option>
+            <option value="high">high thinking</option>
+          </select>
           <button aria-label="Reload messages" onClick={() => convId && loadMessages(convId)} className="text-muted hover:text-text">
             <RefreshCw size={13} />
           </button>
@@ -299,12 +375,29 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                       </span>
                       <div className="min-w-0 flex-1">
                         {m.status === "pending" || m.status === "running" ? (
-                          <div className="flex items-center gap-2 rounded-lg border border-line bg-surface/50 px-3 py-2 text-xs text-muted">
-                            <Spinner className="h-3.5 w-3.5" /> Hermes is thinking…
+                          <div className="rounded-lg border border-line bg-surface/50 px-3 py-2">
+                            {m.content ? (
+                              <div>
+                                <Markdown content={m.content} />
+                                <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse rounded-sm bg-accent align-middle" aria-hidden />
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 text-xs text-muted">
+                                <Spinner className="h-3.5 w-3.5" /> Hermes is thinking…
+                              </div>
+                            )}
+                            {liveTool[m.id] && (
+                              <p className="mt-1.5 flex items-center gap-1.5 text-xxs text-muted">
+                                <Wrench size={11} className="shrink-0 text-accent" />
+                                using tool: <span className="font-mono">{liveTool[m.id]}</span>…
+                              </p>
+                            )}
                             {m.status === "running" && (
-                              <Button size="sm" variant="ghost" onClick={() => stop(m.id)}>
-                                <Square size={11} /> Stop
-                              </Button>
+                              <div className="mt-1.5">
+                                <Button size="sm" variant="ghost" onClick={() => stop(m.id)}>
+                                  <Square size={11} /> Stop
+                                </Button>
+                              </div>
                             )}
                           </div>
                         ) : m.status === "error" ? (
@@ -364,14 +457,14 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
               />
               <button
                 aria-label="Send message"
-                onClick={send}
+                onClick={() => send()}
                 disabled={!convId || busy || !input.trim()}
                 className="absolute bottom-2 right-2 rounded p-1 text-accent disabled:opacity-40"
               >
                 <Send size={15} />
               </button>
             </div>
-            {busy && <p className="mt-1 text-xxs text-muted">Waiting for the agent — send is disabled while a generation is in flight.</p>}
+            {busy && <p className="mt-1 text-xxs text-muted">Agent is generating — tokens stream in live. Send is disabled while in flight.</p>}
           </div>
         </div>
       </div>

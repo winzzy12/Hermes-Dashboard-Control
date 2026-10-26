@@ -1,10 +1,16 @@
-"""Chat: conversations + messages backed by the real hermes CLI."""
+"""Chat: conversations + messages backed by the real hermes CLI (streaming SSE)."""
+import asyncio
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from .. import db, security
 from ..hermes import chatrunner, store
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 
 
 def _conv(cid: str):
@@ -55,7 +61,12 @@ def get_messages(cid: str, user: dict = Depends(security.require_user)):
 
 
 @router.post("/conversations/{cid}/messages")
-def send_message(cid: str, body: dict, user: dict = Depends(security.require_user)):
+async def send_message(cid: str, body: dict, user: dict = Depends(security.require_user)):
+    """Send a message and stream the agent's response as SSE.
+
+    Events: init {message_id, model} / delta {t} / tool {name, state} /
+    done {text, session_id} / error {detail} / stopped {content}.
+    """
     conv = _conv(cid)
     text = (body.get("content") or "").strip()
     if not text:
@@ -63,6 +74,9 @@ def send_message(cid: str, body: dict, user: dict = Depends(security.require_use
     if len(text) > 32000:
         raise HTTPException(status_code=422, detail="Message too long (max 32000 chars)")
     model = (body.get("model") or "").strip()[:120]
+    reasoning = (body.get("reasoning") or "minimal").strip()[:12]
+    if reasoning not in REASONING_LEVELS:
+        reasoning = "minimal"
     # Title the conversation from its first user message
     count = db.one("SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?", (cid,))["c"]
     if count == 0 and conv["title"] in ("New conversation", ""):
@@ -71,10 +85,31 @@ def send_message(cid: str, body: dict, user: dict = Depends(security.require_use
     if hermes_sid and not store.oneshot_session_alive(hermes_sid):
         hermes_sid = ""  # session pruned on the agent side → start fresh
     db.add_message(cid, "user", text, status="done")
-    assistant_id = db.add_message(cid, "assistant", "", status="pending", model=model)
-    chatrunner.start_message(assistant_id, cid, text, model, hermes_sid)
+    assistant_id = db.add_message(cid, "assistant", "", status="running", model=model)
     db.touch_conversation(cid)
-    return {"message_id": assistant_id}
+
+    q = chatrunner.subscribe(assistant_id, asyncio.get_running_loop())
+    chatrunner.start_message(assistant_id, cid, text, model, hermes_sid, reasoning)
+
+    async def gen():
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    row = db.get_message(assistant_id)
+                    if row is not None and row["status"] not in ("pending", "running"):
+                        break  # run finished without a terminal event reaching us
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"event: {ev['event']}\ndata: {json.dumps(ev['data'], ensure_ascii=False)}\n\n"
+                if ev["event"] in ("done", "error", "stopped"):
+                    break
+        finally:
+            chatrunner.unsubscribe(assistant_id, q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/messages/{msg_id}/stop")
