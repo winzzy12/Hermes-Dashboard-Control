@@ -44,7 +44,7 @@ cd ../backend
 
 # 4. run (systemd)
 ```
-sudo nano /etc/systemd/system/hermes-dashboard.service
+nano /etc/systemd/system/hermes-dashboard.service
 ```
 ```
 
@@ -64,11 +64,11 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 ```
-sudo systemctl daemon-reload
-sudo systemctl enable --now hermes-dashboard
+systemctl daemon-reload
+systemctl enable --now hermes-dashboard
 ```
 ```
-sudo systemctl status hermes-dashboard
+systemctl status hermes-dashboard
 ```
 
 Open **http://localhost:8089** — first run shows *first-run setup* to create the admin
