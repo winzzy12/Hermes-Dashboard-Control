@@ -250,6 +250,64 @@ def test_chat_attachment_endpoints(tmp_path, monkeypatch):
         assert not (tmp_path / "att" / aid).exists()
 
 
+def test_gateway_restart_endpoint(tmp_path, monkeypatch):
+    """Real systemctl against a disposable user unit — never the actual gateway."""
+    import os
+    import subprocess
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.routers import gateway as gw
+    from app import config
+
+    ENV = {**os.environ, "XDG_RUNTIME_DIR": "/run/user/0"}
+    DUMMY = "e2e-restart-dummy.service"
+    UNIT_FILE = Path.home() / ".config/systemd/user" / DUMMY
+
+    def _active(unit):
+        return subprocess.run(["systemctl", "--user", "is-active", unit],
+                              capture_output=True, text=True, env=ENV).stdout.strip()
+
+    # self-contained fixture: create + start a throwaway one-shot unit
+    UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    UNIT_FILE.write_text("[Unit]\nDescription=dashboard test unit (transient)\n"
+                         "[Service]\nType=exec\nExecStart=/bin/sleep infinity\n")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], env=ENV)
+    subprocess.run(["systemctl", "--user", "start", DUMMY], env=ENV)
+    assert _active(DUMMY) == "active"
+    try:
+        monkeypatch.setattr("app.config.DB_PATH", tmp_path / "t.db")
+        db._initialized = False
+        if getattr(db._local, "conn", None) is not None:
+            db._local.conn.close()
+            db._local.conn = None
+
+        client = TestClient(app)
+        with client:
+            assert client.get("/api/gateway/status").status_code == 401  # auth required
+            uid = db.create_user("wanz", security.hash_password("x"))
+            client.cookies.set(config.COOKIE_NAME, security.make_token(uid, "wanz", 1))
+
+            # real gateway is a live user unit — status must reflect it (read-only)
+            st = client.get("/api/gateway/status").json()
+            assert st["found"] is True and st["kind"] == "user"
+            assert st["since_epoch"] is not None
+
+            # restart the DISPOSABLE unit via the same endpoint code path
+            monkeypatch.setattr(gw, "UNIT", DUMMY)
+            subprocess.run(["systemctl", "--user", "stop", DUMMY], env=ENV)
+            assert _active(DUMMY) == "inactive"
+            r = client.post("/api/gateway/restart")
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["ok"] is True and body["status"]["state"] == "active"
+            assert _active(DUMMY) == "active"
+    finally:
+        subprocess.run(["systemctl", "--user", "stop", DUMMY], env=ENV, capture_output=True)
+        UNIT_FILE.unlink(missing_ok=True)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], env=ENV, capture_output=True)
+
+
 def test_parse_jsonl_line():
     from app.hermes.chatrunner import parse_jsonl_line
     assert parse_jsonl_line("") is None

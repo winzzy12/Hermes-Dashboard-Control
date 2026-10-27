@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, MessageSquare, History, Puzzle, Clock, Cpu, Folder, Activity, Settings as SettingsIcon,
-  PanelLeft, Search, Sun, Moon, LogOut, Bot, Command, X, Menu,
+  PanelLeft, Search, Sun, Moon, LogOut, Bot, Command, X, Menu, Server,
 } from "lucide-react";
 import type { User } from "./types";
 const NAV = [
@@ -13,6 +13,7 @@ const NAV = [
   { to: "/cronjobs", label: "Cronjobs", icon: Clock, primary: true },
   { to: "/models", label: "Models", icon: Cpu, primary: true },
   { to: "/files", label: "Files", icon: Folder, primary: true },
+  { to: "/gateway", label: "Gateway", icon: Server, primary: false },
   { to: "/system", label: "System Status", icon: Activity, primary: false },
   { to: "/settings", label: "Settings", icon: SettingsIcon, primary: false },
 ];

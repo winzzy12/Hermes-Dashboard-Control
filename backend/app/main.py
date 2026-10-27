@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import auth, chat, chat_attachments, cronjobs, files, models, overview, settings, skills, system
+from .routers import auth, chat, chat_attachments, cronjobs, files, gateway, models, overview, settings, skills, system
 from .version import __version__ as APP_VERSION
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -38,6 +38,7 @@ app.include_router(system.router)
 app.include_router(files.router)
 app.include_router(settings.router)
 app.include_router(chat_attachments.router)
+app.include_router(gateway.router)
 
 
 @app.on_event("startup")
