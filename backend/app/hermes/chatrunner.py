@@ -71,6 +71,9 @@ def parse_jsonl_line(line: str) -> Optional[dict]:
         return {"event": "init", "data": {"model": ev.get("model", ""), "session_id": ev.get("session_id", "")}}
     if t == "text":
         return {"event": "delta", "data": {"t": ev.get("text", "")}}
+    if t == "reasoning":
+        # [hermes-dashboard local patch in hermes_cli] provider thinking tokens streamed live.
+        return {"event": "reasoning", "data": {"t": ev.get("text", "")}}
     if t == "tool_use":
         return {"event": "tool", "data": {"name": ev.get("name", "unknown"), "state": "started"}}
     if t == "tool_result":
@@ -134,6 +137,8 @@ def _runner(msg_id: int, conversation_id: str, text: str, model: str,
                 _publish(msg_id, "init", {"message_id": msg_id, **ev["data"]})
             elif kind == "delta":
                 buf.append(ev["data"]["t"])
+                _publish(msg_id, kind, ev["data"])
+            elif kind == "reasoning":
                 _publish(msg_id, kind, ev["data"])
             elif kind == "tool":
                 _publish(msg_id, kind, ev["data"])

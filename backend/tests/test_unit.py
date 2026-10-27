@@ -189,6 +189,8 @@ def test_parse_jsonl_line():
     assert ev == {"event": "init", "data": {"model": "m1", "session_id": "s1"}}
     ev = parse_jsonl_line('{"type": "text", "text": "hi", "timestamp": 1}')
     assert ev == {"event": "delta", "data": {"t": "hi"}}
+    ev = parse_jsonl_line('{"type": "reasoning", "text": "hmm", "timestamp": 1}')
+    assert ev == {"event": "reasoning", "data": {"t": "hmm"}}
     ev = parse_jsonl_line('{"type": "tool_use", "name": "terminal", "timestamp": 1}')
     assert ev["event"] == "tool" and ev["data"]["state"] == "started" and ev["data"]["name"] == "terminal"
     ev = parse_jsonl_line('{"type": "tool_result", "name": "terminal", "is_error": false, "duration_ms": 5, "timestamp": 1}')

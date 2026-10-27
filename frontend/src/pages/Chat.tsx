@@ -1,12 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  Plus, Send, Square, Trash2, MessageSquare, Pencil, RefreshCw, Bot, Wrench,
+  Plus, Send, Square, Trash2, MessageSquare, Pencil, RefreshCw, Bot, Wrench, Brain, ChevronDown,
 } from "lucide-react";
 import { api, fmtTime } from "../api";
 import type { ChatMessage, Conversation, ModelsPayload } from "../types";
 import { Markdown } from "../Markdown";
 import { Badge, Button, Empty, Input, Spinner, Textarea, useToast } from "../ui";
+
+// Collapsible live-thoughts block: expanded (with a pulsing cursor) while provider
+// thinking tokens stream in, auto-collapsed once the answer text starts arriving.
+function ThoughtBlock({ text, open, live, onToggle }: { text: string; open: boolean; live?: boolean; onToggle: () => void }) {
+  return (
+    <div className="mb-1.5 overflow-hidden rounded-lg border border-line bg-surface/60">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xxs text-muted transition-colors hover:text-text"
+      >
+        <Brain size={11} className={live ? "text-accent" : ""} />
+        <span>{live ? "Thinking…" : "Thought process"}</span>
+        <ChevronDown size={11} className={`ml-auto transition-transform ${open ? "" : "-rotate-90"}`} />
+      </button>
+      {open && (
+        <div className="max-h-48 overflow-y-auto border-t border-line px-2.5 py-1.5">
+          <p className="whitespace-pre-wrap text-xxs leading-relaxed text-muted">
+            {text}
+            {live && <span className="ml-0.5 inline-block h-2.5 w-1 animate-pulse rounded-sm bg-accent align-middle" aria-hidden />}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Chat({ defaultModel }: { defaultModel: string }) {
   const { convId } = useParams();
@@ -21,6 +47,10 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
   const [model, setModel] = useState(defaultModel);
   const [reasoning, setReasoning] = useState("minimal");
   const [liveTool, setLiveTool] = useState<Record<number, string | null>>({});
+  // Live provider thinking tokens (streamed `reasoning` SSE events); keyed by message id.
+  // Collapses automatically when the first answer text delta arrives.
+  const [liveReasoning, setLiveReasoning] = useState<Record<number, string>>({});
+  const [thoughtOpen, setThoughtOpen] = useState<Record<number, boolean>>({});
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
   const [aliasModels, setAliasModels] = useState<{ name: string; model: string }[]>([]);
   const [fallbackModels, setFallbackModels] = useState<string[]>([]);
@@ -174,8 +204,11 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
           if (event === "init" && data.message_id) {
             targetId = data.message_id;
             setMessages((ms) => ms.map((m) => (m.id === asstRow.id ? { ...m, id: data.message_id } : m)));
+          } else if (event === "reasoning") {
+            if (data.t) setLiveReasoning((lr) => ({ ...lr, [targetId]: (lr[targetId] ?? "") + data.t }));
           } else if (event === "delta") {
             setMessages((ms) => ms.map((m) => (m.id === targetId ? { ...m, content: m.content + (data.t || "") } : m)));
+            if (data.t) setThoughtOpen((to) => ({ ...to, [targetId]: false }));
           } else if (event === "tool") {
             setLiveTool((lt) => ({ ...lt, [targetId]: data.state === "started" ? data.name : null }));
           } else if (event === "done") {
@@ -376,16 +409,24 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                       <div className="min-w-0 flex-1">
                         {m.status === "pending" || m.status === "running" ? (
                           <div className="rounded-lg border border-line bg-surface/50 px-3 py-2">
+                            {liveReasoning[m.id] && (
+                              <ThoughtBlock
+                                text={liveReasoning[m.id]}
+                                open={thoughtOpen[m.id] !== false}
+                                live
+                                onToggle={() => setThoughtOpen((to) => ({ ...to, [m.id]: to[m.id] === false }))}
+                              />
+                            )}
                             {m.content ? (
                               <div>
                                 <Markdown content={m.content} />
                                 <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse rounded-sm bg-accent align-middle" aria-hidden />
                               </div>
-                            ) : (
+                            ) : !liveReasoning[m.id] ? (
                               <div className="flex items-center gap-2 text-xs text-muted">
                                 <Spinner className="h-3.5 w-3.5" /> Hermes is thinking…
                               </div>
-                            )}
+                            ) : null}
                             {liveTool[m.id] && (
                               <p className="mt-1.5 flex items-center gap-1.5 text-xxs text-muted">
                                 <Wrench size={11} className="shrink-0 text-accent" />
@@ -413,6 +454,13 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                           </div>
                         ) : (
                           <div className="rounded-lg border border-line bg-bg px-3 py-2">
+                            {liveReasoning[m.id] && (
+                              <ThoughtBlock
+                                text={liveReasoning[m.id]}
+                                open={thoughtOpen[m.id] === true}
+                                onToggle={() => setThoughtOpen((to) => ({ ...to, [m.id]: !(to[m.id] === true) }))}
+                              />
+                            )}
                             <Markdown content={m.content} />
                             <div className="mt-1.5 flex items-center gap-2 text-xxs text-muted">
                               <span title={new Date(m.created_at * 1000).toLocaleString()}>{fmtTime(m.created_at)}</span>
