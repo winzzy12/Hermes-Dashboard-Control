@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   Plus, Send, Square, Trash2, MessageSquare, Pencil, RefreshCw, Bot, Wrench, Brain, ChevronDown,
-  Paperclip, FileText, X,
+  Paperclip, FileText, X, Search,
 } from "lucide-react";
 import { api, fmtTime } from "../api";
 import type { ChatAttachment, ChatMessage, Conversation, ModelsPayload } from "../types";
 import { Markdown } from "../Markdown";
-import { Badge, Button, Empty, Input, Spinner, Textarea, useToast } from "../ui";
+import { Badge, Button, Empty, Input, Spinner, useToast } from "../ui";
 
 // Collapsible live-thoughts block: expanded (with a pulsing cursor) while provider
 // thinking tokens stream in, auto-collapsed once the answer text starts arriving.
@@ -371,53 +371,79 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
   return (
     <div className="flex h-full min-h-0">
       {/* conversation list */}
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-line md:flex">
-        <div className="space-y-2 p-2">
-          <Button variant="primary" size="sm" className="w-full" onClick={createConv}>
-            <Plus size={13} /> New conversation
+      <aside className="hidden w-64 shrink-0 flex-col border-r border-line bg-surface/40 md:flex">
+        <div className="flex items-center justify-between pb-1.5 pl-3.5 pr-2 pt-3">
+          <span className="text-xxs font-semibold uppercase tracking-wider text-muted">Conversations</span>
+          <Button size="sm" variant="ghost" className="h-7 px-2" onClick={createConv} aria-label="New conversation" title="New conversation">
+            <Plus size={14} />
           </Button>
-          <Input placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-          {convs.length === 0 && <p className="px-2 py-6 text-center text-xs text-muted">No conversations</p>}
-          {convs.map((c) => (
-            <div
-              key={c.id}
-              className={`group flex items-center gap-1 rounded px-2 py-1.5 ${
-                c.id === convId ? "bg-accent/10" : "hover:bg-surface"
-              }`}
-            >
-              <button
-                className="min-w-0 flex-1 truncate text-left text-[13px]"
-                onClick={() => nav(`/chat/${c.id}`)}
-                title={c.title}
+        <div className="px-2.5 pb-2">
+          <div className="relative">
+            <Search size={12} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+            <Input
+              placeholder="Search conversations…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-7 pl-7 text-xs"
+              aria-label="Search conversations"
+            />
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+          {convs.length === 0 && (
+            <p className="px-2 py-6 text-center text-xs text-muted">No conversations yet.<br />Start one with the + button.</p>
+          )}
+          {convs.map((c) => {
+            const active = c.id === convId;
+            return (
+              <div
+                key={c.id}
+                className={`group relative mb-0.5 flex items-center rounded-lg transition-colors ${
+                  active ? "bg-accent/12" : "hover:bg-bg"
+                }`}
               >
-                <MessageSquare size={11} className="mr-1.5 inline text-muted" />
-                {c.title}
-              </button>
-              <button
-                aria-label={`Rename ${c.title}`}
-                className="hidden shrink-0 text-muted hover:text-text group-hover:block"
-                onClick={() => setRenaming({ id: c.id, title: c.title })}
-              >
-                <Pencil size={11} />
-              </button>
-              <button
-                aria-label={`Delete ${c.title}`}
-                className="hidden shrink-0 text-muted hover:text-error group-hover:block"
-                onClick={() => removeConv(c.id)}
-              >
-                <Trash2 size={11} />
-              </button>
-            </div>
-          ))}
+                {active && (
+                  <span aria-hidden className="absolute -left-0.5 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+                )}
+                <button
+                  className="min-w-0 flex-1 py-[7px] pl-3.5 pr-1.5 text-left"
+                  onClick={() => nav(`/chat/${c.id}`)}
+                  title={c.title}
+                >
+                  <span className={`block truncate text-[13px] leading-tight ${active ? "font-medium" : "text-text/90"}`}>
+                    {c.title}
+                  </span>
+                </button>
+                <span className="shrink-0 pr-2.5 text-xxs text-muted group-hover:hidden">
+                  {fmtTime(c.updated_at)}
+                </span>
+                <span className="hidden shrink-0 items-center gap-0.5 pr-1.5 group-hover:flex">
+                  <button
+                    aria-label={`Rename ${c.title}`}
+                    className="rounded p-1 text-muted hover:bg-bg hover:text-text"
+                    onClick={() => setRenaming({ id: c.id, title: c.title })}
+                  >
+                    <Pencil size={11} />
+                  </button>
+                  <button
+                    aria-label={`Delete ${c.title}`}
+                    className="rounded p-1 text-muted hover:bg-bg hover:text-error"
+                    onClick={() => removeConv(c.id)}
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </span>
+              </div>
+            );
+          })}
         </div>
       </aside>
 
       {/* chat area */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
-          <Button size="sm" variant="ghost" className="md:hidden" onClick={createConv}>
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-surface/40 px-3">
+          <Button size="sm" variant="ghost" className="md:hidden" onClick={createConv} aria-label="New conversation">
             <Plus size={13} />
           </Button>
           {convId && convs.find((c) => c.id === convId) && (
@@ -425,7 +451,10 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
           )}
           {!convId && <span className="text-[13px] text-muted">Select or create a conversation</span>}
           <div className="flex-1" />
-          <span className="flex items-center gap-1.5 text-xxs text-muted" title={connected ? "Dashboard backend reachable" : "Backend unreachable"}>
+          <span
+            className="flex items-center gap-1.5 rounded-full border border-line bg-bg px-2 py-0.5 text-xxs text-muted"
+            title={connected ? "Dashboard backend reachable" : "Backend unreachable"}
+          >
             <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected === false ? "bg-error" : connected ? "bg-success" : "bg-muted"}`} />
             {connected === false ? "offline" : "connected"}
           </span>
@@ -433,7 +462,7 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
             aria-label="Model"
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            className="h-6 max-w-40 rounded border border-line bg-bg px-1 text-xxs"
+            className="h-7 max-w-40 rounded-lg border border-line bg-bg px-1.5 text-xxs"
           >
             <option value="">default model</option>
             {endpointModels.length > 0 && (
@@ -463,7 +492,7 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
             title="Thinking effort — lower = faster first token"
             value={reasoning}
             onChange={(e) => setReasoning(e.target.value)}
-            className="h-6 max-w-32 rounded border border-line bg-bg px-1 text-xxs"
+            className="h-7 max-w-32 rounded-lg border border-line bg-bg px-1.5 text-xxs"
           >
             <option value="minimal">minimal thinking</option>
             <option value="none">no thinking</option>
@@ -471,12 +500,13 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
             <option value="medium">medium thinking</option>
             <option value="high">high thinking</option>
           </select>
-          <button aria-label="Reload messages" onClick={() => convId && loadMessages(convId)} className="text-muted hover:text-text">
+          <span aria-hidden className="h-4 w-px bg-line" />
+          <button aria-label="Reload messages" onClick={() => convId && loadMessages(convId)} className="rounded p-1 text-muted hover:bg-bg hover:text-text">
             <RefreshCw size={13} />
           </button>
         </div>
 
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 md:px-6">
           {!convId ? (
             <Empty
               icon={<MessageSquare size={22} />}
@@ -488,12 +518,12 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
           ) : messages.length === 0 ? (
             <Empty icon={<Bot size={22} />} title="No messages yet" sub="Send the first message below." />
           ) : (
-            <div className="mx-auto max-w-3xl space-y-4">
+            <div className="mx-auto max-w-[760px] space-y-5">
               {messages.map((m) => (
-                <div key={m.id} className="fadein">
+                <div key={m.id} className="msg-in fadein">
                   {m.role === "user" ? (
                     <div className="flex justify-end">
-                      <div className="max-w-[85%] rounded-xl rounded-br-sm border border-accent/25 bg-accent/10 px-3 py-2">
+                      <div className="max-w-[85%] rounded-2xl rounded-br-md border border-accent/25 bg-accent/10 px-3.5 py-2 shadow-sm">
                         {parseAtts(m).length > 0 && (
                           <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
                             {parseAtts(m).map((a) => (
@@ -502,19 +532,19 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                           </div>
                         )}
                         {m.content && <p className="whitespace-pre-wrap text-[13px]">{m.content}</p>}
-                        <p className="mt-1 text-right text-xxs text-muted" title={new Date(m.created_at * 1000).toLocaleString()}>
+                        <p className="mt-1 text-right text-xxs text-muted/80" title={new Date(m.created_at * 1000).toLocaleString()}>
                           {fmtTime(m.created_at)}
                         </p>
                       </div>
                     </div>
                   ) : (
                     <div className="flex gap-2.5">
-                      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-surface text-muted">
-                        <Bot size={13} />
+                      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
+                        <Bot size={14} />
                       </span>
                       <div className="min-w-0 flex-1">
                         {m.status === "pending" || m.status === "running" ? (
-                          <div className="rounded-lg border border-line bg-surface/50 px-3 py-2">
+                          <div className="rounded-xl border border-line bg-surface/50 px-3.5 py-2.5">
                             {liveReasoning[m.id] && (
                               <ThoughtBlock
                                 text={liveReasoning[m.id]}
@@ -526,11 +556,16 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                             {m.content ? (
                               <div>
                                 <Markdown content={m.content} />
-                                <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse rounded-sm bg-accent align-middle" aria-hidden />
+                                <span className="caret ml-0.5 inline-block h-3 w-1.5 rounded-sm bg-accent align-middle" aria-hidden />
                               </div>
                             ) : !liveReasoning[m.id] ? (
                               <div className="flex items-center gap-2 text-xs text-muted">
-                                <Spinner className="h-3.5 w-3.5" /> Hermes is thinking…
+                                <span className="flex items-end gap-0.5" aria-hidden>
+                                  {[0, 1, 2].map((i) => (
+                                    <span key={i} className="chat-dot inline-block h-1 w-1 rounded-full bg-accent" style={{ animationDelay: `${i * 0.18}s` }} />
+                                  ))}
+                                </span>
+                                Hermes is thinking…
                               </div>
                             ) : null}
                             {liveTool[m.id] && (
@@ -548,18 +583,18 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                             )}
                           </div>
                         ) : m.status === "error" ? (
-                          <div className="rounded-lg border border-error/30 bg-error/5 px-3 py-2">
+                          <div className="rounded-xl border border-error/30 bg-error/5 px-3.5 py-2.5">
                             <p className="text-xs text-error">{m.error}</p>
                             <Button size="sm" variant="ghost" className="mt-1" onClick={() => retry(m)}>
                               <RefreshCw size={11} /> Retry
                             </Button>
                           </div>
                         ) : m.status === "stopped" ? (
-                          <div className="rounded-lg border border-line bg-surface/50 px-3 py-2 text-xs text-muted">
+                          <div className="rounded-xl border border-line bg-surface/50 px-3.5 py-2.5 text-xs text-muted">
                             Generation stopped.
                           </div>
                         ) : (
-                          <div className="rounded-lg border border-line bg-bg px-3 py-2">
+                          <div className="group/card rounded-xl border border-line bg-bg px-3.5 py-2.5 shadow-sm">
                             {liveReasoning[m.id] && (
                               <ThoughtBlock
                                 text={liveReasoning[m.id]}
@@ -568,12 +603,12 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                               />
                             )}
                             <Markdown content={m.content} />
-                            <div className="mt-1.5 flex items-center gap-2 text-xxs text-muted">
+                            <div className="mt-1.5 flex items-center gap-2 text-xxs text-muted opacity-70 transition-opacity group-hover/card:opacity-100">
                               <span title={new Date(m.created_at * 1000).toLocaleString()}>{fmtTime(m.created_at)}</span>
                               {m.model && <Badge>{m.model}</Badge>}
                               <button
                                 aria-label="Copy message"
-                                className="ml-auto text-muted hover:text-text"
+                                className="ml-auto rounded px-1.5 py-0.5 text-muted transition-colors hover:bg-surface hover:text-text"
                                 onClick={() => navigator.clipboard.writeText(m.content)}
                               >
                                 Copy
@@ -591,8 +626,8 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
         </div>
 
         {/* composer */}
-        <div className="shrink-0 border-t border-line p-3">
-          <div className="mx-auto max-w-3xl">
+        <div className="shrink-0 border-t border-line bg-surface/40 p-3">
+          <div className="mx-auto max-w-[760px]">
             {staged.length > 0 && (
               <div className="mb-1.5 flex flex-wrap gap-1.5">
                 {staged.map((a) => (
@@ -601,7 +636,7 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
               </div>
             )}
             <div
-              className={`relative rounded-lg ${dragOver ? "ring-2 ring-accent" : ""}`}
+              className={`rounded-xl border border-line bg-bg shadow-sm transition-shadow ${dragOver ? "ring-2 ring-accent" : ""}`}
               onDragOver={(e) => {
                 e.preventDefault();
                 if (!dragOver) setDragOver(true);
@@ -624,7 +659,7 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                   e.target.value = "";
                 }}
               />
-              <Textarea
+              <textarea
                 rows={2}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -636,28 +671,34 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                 }}
                 placeholder={convId ? "Message Hermes… (Enter to send, Shift+Enter for newline)" : "Create a conversation first"}
                 disabled={!convId}
-                className="pl-10 pr-10"
+                className="block max-h-44 w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] text-text outline-none placeholder:text-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
                 aria-label="Message input"
               />
-              <button
-                aria-label="Attach files"
-                title="Attach files (or drag & drop)"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!convId || staged.length >= 5}
-                className="absolute bottom-2 left-2 rounded p-1 text-muted hover:text-text disabled:opacity-40"
-              >
-                <Paperclip size={15} />
-              </button>
-              <button
-                aria-label="Send message"
-                onClick={() => send()}
-                disabled={!convId || busy || staged.some((s) => s.uploading) || (!input.trim() && staged.filter((s) => !s.uploading).length === 0)}
-                className="absolute bottom-2 right-2 rounded p-1 text-accent disabled:opacity-40"
-              >
-                <Send size={15} />
-              </button>
+              <div className="flex items-center gap-1 border-t border-line/60 px-2 py-1.5">
+                <button
+                  aria-label="Attach files"
+                  title="Attach files (or drag & drop)"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!convId || staged.length >= 5}
+                  className="rounded-lg p-1.5 text-muted transition-colors hover:bg-surface hover:text-text disabled:opacity-40"
+                >
+                  <Paperclip size={14} />
+                </button>
+                <div className="flex-1" />
+                <span className="mr-1 hidden text-xxs text-muted/80 sm:block">
+                  {busy ? "Agent is generating…" : <kbd className="rounded border border-line bg-surface px-1 font-sans text-xxs">Enter</kbd>}
+                </span>
+                <button
+                  aria-label="Send message"
+                  title="Send message"
+                  onClick={() => send()}
+                  disabled={!convId || busy || staged.some((s) => s.uploading) || (!input.trim() && staged.filter((s) => !s.uploading).length === 0)}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-xxs font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Send size={12} /> Send
+                </button>
+              </div>
             </div>
-            {busy && <p className="mt-1 text-xxs text-muted">Agent is generating — tokens stream in live. Send is disabled while in flight.</p>}
           </div>
         </div>
       </div>
