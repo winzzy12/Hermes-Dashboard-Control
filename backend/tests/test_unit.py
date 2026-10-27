@@ -302,6 +302,14 @@ def test_gateway_restart_endpoint(tmp_path, monkeypatch):
             body = r.json()
             assert body["ok"] is True and body["status"]["state"] == "active"
             assert _active(DUMMY) == "active"
+
+            # regression (v1.3.1): `systemctl show` of a NONEXISTENT unit exits 0
+            # with ActiveState=inactive — it must still be reported as not-found
+            # (this is what broke hosts where the gateway is a SYSTEM unit)
+            monkeypatch.setattr(gw, "UNIT", "definitely-not-a-unit-xyz.service")
+            st2 = client.get("/api/gateway/status").json()
+            assert st2["found"] is False and st2["active"] is False
+            assert client.post("/api/gateway/restart").status_code == 404
     finally:
         subprocess.run(["systemctl", "--user", "stop", DUMMY], env=ENV, capture_output=True)
         UNIT_FILE.unlink(missing_ok=True)

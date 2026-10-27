@@ -2,9 +2,10 @@
 
 The dashboard backend runs as its own systemd service — OUTSIDE the gateway
 daemon — so it can bounce the gateway on the user's behalf (e.g. after patching
-hermes CLI code that the long-running gateway holds in memory). The gateway is
-a systemd USER unit of root here; the user manager is reached with
-XDG_RUNTIME_DIR=/run/user/0, which also works from a system-service context.
+hermes CLI code that the long-running gateway holds in memory). The unit may be
+a systemd USER unit (XDG_RUNTIME_DIR=/run/user/0, works from a system-service
+context too) or a SYSTEM unit depending on the host; both scopes are probed and
+the one where the unit actually exists wins.
 """
 import os
 import subprocess
@@ -42,16 +43,22 @@ def _epoch(ts: str | None) -> int | None:
 
 
 def _show(kind: str) -> dict:
-    p = _sysd("show", UNIT, "-p", "ActiveState", "-p", "ActiveEnterTimestamp", "-p", "MainPID",
-              user=(kind == "user"))
-    if p.returncode != 0 or "ActiveState=" not in p.stdout:
-        return {"unit": UNIT, "kind": kind, "found": False, "active": False, "state": "not-found",
-                "since": None, "since_epoch": None, "pid": None}
+    """Query one scope. NOTE: `systemctl show` exits 0 with ActiveState=inactive
+    even for a unit that does not exist in that scope (phantom), so `found` is
+    decided by LoadState, not the return code or ActiveState."""
+    p = _sysd("show", UNIT, "-p", "LoadState", "-p", "ActiveState", "-p", "ActiveEnterTimestamp",
+              "-p", "MainPID", user=(kind == "user"))
+    missing = {"unit": UNIT, "kind": kind, "found": False, "active": False, "state": "not-found",
+               "since": None, "since_epoch": None, "pid": None}
+    if p.returncode != 0:
+        return missing  # e.g. no user manager reachable ("Failed to connect to bus")
     f = {}
     for line in p.stdout.strip().splitlines():
         if "=" in line:
             k, _, v = line.partition("=")
             f[k] = v
+    if f.get("LoadState", "not-found") == "not-found":
+        return missing
     state = f.get("ActiveState", "unknown")
     pid = int(f["MainPID"]) if f.get("MainPID", "").isdigit() and int(f["MainPID"]) else None
     since = f.get("ActiveEnterTimestamp") or None
@@ -60,10 +67,17 @@ def _show(kind: str) -> dict:
 
 
 def gateway_status() -> dict:
-    st = _show("user")
-    if not st["found"]:
-        st = _show("system")
-    return st
+    """Prefer the scope where the unit exists; among existing ones, the active one."""
+    user_st, sys_st = _show("user"), _show("system")
+    if user_st["active"]:
+        return user_st
+    if sys_st["active"]:
+        return sys_st
+    if user_st["found"]:
+        return user_st
+    if sys_st["found"]:
+        return sys_st
+    return sys_st
 
 
 @router.get("/status")
