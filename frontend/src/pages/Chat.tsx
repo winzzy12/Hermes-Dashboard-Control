@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   Plus, Send, Square, Trash2, MessageSquare, Pencil, RefreshCw, Bot, Wrench, Brain, ChevronDown,
+  Paperclip, FileText, X,
 } from "lucide-react";
 import { api, fmtTime } from "../api";
-import type { ChatMessage, Conversation, ModelsPayload } from "../types";
+import type { ChatAttachment, ChatMessage, Conversation, ModelsPayload } from "../types";
 import { Markdown } from "../Markdown";
 import { Badge, Button, Empty, Input, Spinner, Textarea, useToast } from "../ui";
 
@@ -34,6 +35,56 @@ function ThoughtBlock({ text, open, live, onToggle }: { text: string; open: bool
   );
 }
 
+// Attachment chip: image thumbnail or file icon + name + size. Read-only when
+// no onRemove (message history); removable in the composer (staged chips).
+export function AttChip({ att, onRemove }: { att: ChatAttachment; onRemove?: () => void }) {
+  const [imgOk, setImgOk] = useState(true);
+  return (
+    <span className="group inline-flex max-w-[220px] items-center gap-1.5 rounded-lg border border-line bg-bg px-1.5 py-1 text-xxs">
+      {att.is_image && imgOk ? (
+        <img
+          src={`/api/chat/attachments/${att.id}/raw`}
+          alt={att.name}
+          className="h-7 w-7 shrink-0 rounded object-cover"
+          onError={() => setImgOk(false)}
+        />
+      ) : (
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-surface text-muted">
+          <FileText size={13} />
+        </span>
+      )}
+      <span className="min-w-0">
+        <span className="block truncate leading-tight">{att.name}</span>
+        <span className="block leading-tight text-muted">
+          {att.size >= 1024 ? `${(att.size / 1024).toFixed(1)} KB` : `${att.size} B`}
+          {att.uploading ? " · uploading…" : ""}
+        </span>
+      </span>
+      {onRemove && (
+        <button
+          aria-label={`Remove ${att.name}`}
+          className="ml-0.5 shrink-0 rounded p-0.5 text-muted hover:text-text"
+          onClick={onRemove}
+        >
+          <X size={12} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** Parse the JSON attachments column of a message row (tolerant of bad data). */
+export function parseAtts(m: ChatMessage): ChatAttachment[] {
+  if (!m.attachments) return [];
+  if (Array.isArray(m.attachments)) return m.attachments as ChatAttachment[];
+  try {
+    const v = JSON.parse(m.attachments);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function Chat({ defaultModel }: { defaultModel: string }) {
   const { convId } = useParams();
   const nav = useNavigate();
@@ -57,6 +108,10 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
   const [connected, setConnected] = useState<boolean | null>(null);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
+  // Staged chat attachments (uploaded immediately on pick; sent as ids with the message)
+  const [staged, setStaged] = useState<ChatAttachment[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const streamAbort = useRef<AbortController | null>(null);
@@ -158,12 +213,56 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
     }
   };
 
+  const uploadFiles = async (files: FileList | File[]) => {
+    const incoming = Array.from(files);
+    if (!incoming.length || !convId) return;
+    const room = 5 - staged.filter((s) => !s.uploading).length;
+    if (room <= 0) {
+      toast.push("error", "Max 5 attachments per message");
+      return;
+    }
+    const accepted = incoming.slice(0, room);
+    if (incoming.length > room) toast.push("error", "Max 5 attachments per message — extra files skipped");
+    const placeholders: ChatAttachment[] = accepted.map((f, i) => ({
+      id: `pending_${Date.now()}_${i}`, name: f.name, size: f.size,
+      is_image: /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name), uploading: true,
+    }));
+    setStaged((s) => [...s, ...placeholders]);
+    for (let i = 0; i < accepted.length; i++) {
+      const f = accepted[i];
+      const ph = placeholders[i];
+      const fd = new FormData();
+      fd.append("files", f);
+      try {
+        const res = await fetch("/api/chat/attachments", { method: "POST", credentials: "same-origin", body: fd });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !Array.isArray(data) || !data[0]) {
+          throw new Error(data?.detail ?? `HTTP ${res.status}`);
+        }
+        setStaged((s) => s.map((a) => (a.id === ph.id ? { ...data[0], uploading: false } : a)));
+      } catch (e) {
+        setStaged((s) => s.filter((a) => a.id !== ph.id));
+        toast.push("error", e instanceof Error ? e.message : "Upload failed");
+      }
+    }
+  };
+
+  const removeStaged = async (id: string) => {
+    setStaged((s) => s.filter((a) => a.id !== id));
+    if (!id.startsWith("pending_")) {
+      try { await api.del(`/api/chat/attachments/${id}`); } catch { /* already gone is fine */ }
+    }
+  };
+
   const send = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
-    if (!text || !convId) return;
+    const ready = staged.filter((s) => !s.uploading);
+    if ((!text && ready.length === 0) || !convId || staged.some((s) => s.uploading)) return;
     setInput("");
+    const attsMeta = ready.map(({ id, name, size, is_image }) => ({ id, name, size, is_image }));
+    setStaged([]);
     const now = Date.now() / 1000;
-    const userRow = { id: -Date.now(), conversation_id: convId, role: "user" as const, content: text, status: "done" as const, error: null, model, hermes_session_id: null, created_at: now, finished_at: now };
+    const userRow = { id: -Date.now(), conversation_id: convId, role: "user" as const, content: text, status: "done" as const, error: null, model, hermes_session_id: null, created_at: now, finished_at: now, attachments: attsMeta.length ? JSON.stringify(attsMeta) : null };
     const asstRow = { id: userRow.id + 1, conversation_id: convId, role: "assistant" as const, content: "", status: "running" as const, error: null, model, hermes_session_id: null, created_at: now, finished_at: null };
     setMessages((ms) => [...ms, userRow as ChatMessage, asstRow as ChatMessage]);
     let targetId = asstRow.id;
@@ -174,7 +273,7 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: text, model, reasoning }),
+        body: JSON.stringify({ content: text, model, reasoning, attachments: attsMeta.map((a) => a.id) }),
         signal: ac.signal,
       });
       if (!res.ok || !res.body) {
@@ -395,7 +494,14 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                   {m.role === "user" ? (
                     <div className="flex justify-end">
                       <div className="max-w-[85%] rounded-xl rounded-br-sm border border-accent/25 bg-accent/10 px-3 py-2">
-                        <p className="whitespace-pre-wrap text-[13px]">{m.content}</p>
+                        {parseAtts(m).length > 0 && (
+                          <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
+                            {parseAtts(m).map((a) => (
+                              <AttChip key={a.id} att={a} />
+                            ))}
+                          </div>
+                        )}
+                        {m.content && <p className="whitespace-pre-wrap text-[13px]">{m.content}</p>}
                         <p className="mt-1 text-right text-xxs text-muted" title={new Date(m.created_at * 1000).toLocaleString()}>
                           {fmtTime(m.created_at)}
                         </p>
@@ -487,7 +593,37 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
         {/* composer */}
         <div className="shrink-0 border-t border-line p-3">
           <div className="mx-auto max-w-3xl">
-            <div className="relative">
+            {staged.length > 0 && (
+              <div className="mb-1.5 flex flex-wrap gap-1.5">
+                {staged.map((a) => (
+                  <AttChip key={a.id} att={a} onRemove={() => removeStaged(a.id)} />
+                ))}
+              </div>
+            )}
+            <div
+              className={`relative rounded-lg ${dragOver ? "ring-2 ring-accent" : ""}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (!dragOver) setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                if (convId && e.dataTransfer?.files?.length) uploadFiles(e.dataTransfer.files);
+              }}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                aria-label="Attach files"
+                onChange={(e) => {
+                  if (e.target.files?.length) uploadFiles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
               <Textarea
                 rows={2}
                 value={input}
@@ -500,13 +636,22 @@ export default function Chat({ defaultModel }: { defaultModel: string }) {
                 }}
                 placeholder={convId ? "Message Hermes… (Enter to send, Shift+Enter for newline)" : "Create a conversation first"}
                 disabled={!convId}
-                className="pr-10"
+                className="pl-10 pr-10"
                 aria-label="Message input"
               />
               <button
+                aria-label="Attach files"
+                title="Attach files (or drag & drop)"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!convId || staged.length >= 5}
+                className="absolute bottom-2 left-2 rounded p-1 text-muted hover:text-text disabled:opacity-40"
+              >
+                <Paperclip size={15} />
+              </button>
+              <button
                 aria-label="Send message"
                 onClick={() => send()}
-                disabled={!convId || busy || !input.trim()}
+                disabled={!convId || busy || staged.some((s) => s.uploading) || (!input.trim() && staged.filter((s) => !s.uploading).length === 0)}
                 className="absolute bottom-2 right-2 rounded p-1 text-accent disabled:opacity-40"
               >
                 <Send size={15} />

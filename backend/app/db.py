@@ -79,7 +79,16 @@ def init() -> None:
         conn = connect()
         conn.executescript(SCHEMA)
         conn.commit()
+        _migrate(conn)
         _initialized = True
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent column migrations for pre-existing databases."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+    if "attachments" not in cols:  # JSON list of staged chat-attachment metadata
+        conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT")
+        conn.commit()
 
 
 def q(sql: str, params: tuple = ()) -> list[sqlite3.Row]:
@@ -162,16 +171,17 @@ def delete_conversation(cid: str) -> None:
 
 
 def add_message(conversation_id: str, role: str, content: str, status: str = "done",
-                model: str = "", created_at: float | None = None) -> int:
+                model: str = "", created_at: float | None = None,
+                attachments: str | None = None) -> int:
     return execute(
-        "INSERT INTO messages (conversation_id, role, content, status, model, created_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (conversation_id, role, content, status, model, created_at or time.time()),
+        "INSERT INTO messages (conversation_id, role, content, status, model, created_at, attachments) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (conversation_id, role, content, status, model, created_at or time.time(), attachments),
     )
 
 
 def update_message(msg_id: int, **fields) -> None:
-    allowed = ("content", "status", "error", "hermes_session_id", "finished_at", "model")
+    allowed = ("content", "status", "error", "hermes_session_id", "finished_at", "model", "attachments")
     sets, params = [], []
     for k, v in fields.items():
         if k not in allowed:

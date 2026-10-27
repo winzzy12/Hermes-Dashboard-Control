@@ -65,6 +65,17 @@ export type ChatMessage = {
   hermes_session_id: string | null;
   created_at: number;
   finished_at: number | null;
+  /** JSON array of {id,name,size,is_image} on user rows with file attachments. */
+  attachments?: string | null;
+};
+
+export type ChatAttachment = {
+  id: string;
+  name: string;
+  size: number;
+  is_image: boolean;
+  /** set on staged (not-yet-sent) chips */
+  uploading?: boolean;
 };
 
 export type Skill = {

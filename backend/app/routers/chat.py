@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from .. import db, security
 from ..hermes import chatrunner, store
+from . import chat_attachments
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -69,10 +70,22 @@ async def send_message(cid: str, body: dict, user: dict = Depends(security.requi
     """
     conv = _conv(cid)
     text = (body.get("content") or "").strip()
-    if not text:
+    att_ids = [str(a) for a in (body.get("attachments") or [])][:chat_attachments.MAX_FILES]
+    if not text and not att_ids:
         raise HTTPException(status_code=422, detail="Message content required")
     if len(text) > 32000:
         raise HTTPException(status_code=422, detail="Message too long (max 32000 chars)")
+    # Resolve staged attachments (uploaded via POST /api/chat/attachments)
+    metas: list[dict] = []
+    for aid in att_ids:
+        p = chat_attachments.attachment_path(aid)
+        if not p.is_file():
+            raise HTTPException(status_code=422, detail=f"Attachment not found: {aid}")
+        metas.append({"id": aid, "name": p.name.split("_", 1)[-1] or p.name, "size": p.stat().st_size,
+                      "is_image": chat_attachments.is_image_name(p.name), "path": str(p)})
+    # The user row keeps the original text; the agent gets the assembled prompt
+    # (text file contents inlined, image paths referenced for vision_analyze).
+    prompt = chatrunner.build_prompt(text, metas) if metas else text
     model = (body.get("model") or "").strip()[:120]
     reasoning = (body.get("reasoning") or "minimal").strip()[:12]
     if reasoning not in REASONING_LEVELS:
@@ -80,16 +93,18 @@ async def send_message(cid: str, body: dict, user: dict = Depends(security.requi
     # Title the conversation from its first user message
     count = db.one("SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?", (cid,))["c"]
     if count == 0 and conv["title"] in ("New conversation", ""):
-        db.rename_conversation(cid, text[:60] + ("…" if len(text) > 60 else ""))
+        title_src = text or ", ".join(m["name"] for m in metas)
+        db.rename_conversation(cid, title_src[:60] + ("…" if len(title_src) > 60 else ""))
     hermes_sid = conv["hermes_session_id"] or ""
     if hermes_sid and not store.oneshot_session_alive(hermes_sid):
         hermes_sid = ""  # session pruned on the agent side → start fresh
-    db.add_message(cid, "user", text, status="done")
+    db.add_message(cid, "user", text, status="done",
+                   attachments=json.dumps(metas, ensure_ascii=False) if metas else None)
     assistant_id = db.add_message(cid, "assistant", "", status="running", model=model)
     db.touch_conversation(cid)
 
     q = chatrunner.subscribe(assistant_id, asyncio.get_running_loop())
-    chatrunner.start_message(assistant_id, cid, text, model, hermes_sid, reasoning)
+    chatrunner.start_message(assistant_id, cid, prompt, model, hermes_sid, reasoning, attachments=metas or None)
 
     async def gen():
         try:

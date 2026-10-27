@@ -12,12 +12,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .routers import auth, chat, cronjobs, files, models, overview, settings, skills, system
+from .routers import auth, chat, chat_attachments, cronjobs, files, models, overview, settings, skills, system
+from .version import __version__ as APP_VERSION
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("hermes-dashboard")
 
-app = FastAPI(title="Hermes Control", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(title="Hermes Control", version=APP_VERSION, docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,11 +37,13 @@ app.include_router(models.router)
 app.include_router(system.router)
 app.include_router(files.router)
 app.include_router(settings.router)
+app.include_router(chat_attachments.router)
 
 
 @app.on_event("startup")
 def startup() -> None:
     db.init()
+    chat_attachments.prune_old()
     log.info("Hermes Control starting: mode=%s port=%d hermes_home=%s",
              config.MODE, config.PORT, config.HERMES_HOME)
 

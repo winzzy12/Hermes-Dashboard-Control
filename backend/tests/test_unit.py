@@ -181,6 +181,75 @@ def test_files_endpoints(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- chat runner
 
+def test_build_prompt_attachments(tmp_path):
+    from app.hermes.chatrunner import build_prompt
+
+    # text file embedded as a fenced block
+    f = tmp_path / "notes.txt"
+    f.write_text("alpha line\nbeta line\n")
+    p = build_prompt("summarize this", [{"name": "notes.txt", "path": str(f), "is_image": False, "id": "x", "size": 22}])
+    assert p.startswith("summarize this")
+    assert "[Attached file: notes.txt (21 B)]" in p and "```txt\nalpha line\nbeta line\n```" in p
+
+    # image referenced by path with vision_analyze instruction
+    p = build_prompt("what is this", [{"name": "pic.png", "path": "/tmp/pic.png", "is_image": True, "id": "y", "size": 9}])
+    assert "[Image attached: pic.png — local path: /tmp/pic.png]" in p and "vision_analyze" in p
+
+    # binary file → notice, no dump
+    b = tmp_path / "blob.bin"
+    b.write_bytes(b"\x00\x01\xff")
+    p = build_prompt("look", [{"name": "blob.bin", "path": str(b), "is_image": False, "id": "z", "size": 3}])
+    assert "binary file, content not shown" in p
+
+    # oversized text → truncated at the cap
+    big = tmp_path / "big.log"
+    big.write_text("x" * 150_000)
+    p = build_prompt("check", [{"name": "big.log", "path": str(big), "is_image": False, "id": "w", "size": 150_000}])
+    assert "truncated at 100000 chars" in p and len(p) < 120_000
+
+    # unreadable path → notice
+    p = build_prompt("go", [{"name": "gone.txt", "path": str(tmp_path / "nope.txt"), "is_image": False, "id": "v", "size": 5}])
+    assert "could not be read" in p
+
+
+def test_chat_attachment_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr("app.routers.chat_attachments.ATTACH_DIR", tmp_path / "att")
+    db._initialized = False
+    if getattr(db._local, "conn", None) is not None:
+        db._local.conn.close()
+        db._local.conn = None
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app import config
+
+    client = TestClient(app)
+    with client:
+        assert client.post("/api/chat/attachments").status_code == 401  # auth required
+        uid = db.create_user("wanz", security.hash_password("x"))
+        client.cookies.set(config.COOKIE_NAME, security.make_token(uid, "wanz", 1))
+
+        r = client.post("/api/chat/attachments", files={"files": ("hello world.txt", b"hello world", "text/plain")})
+        assert r.status_code == 200
+        meta = r.json()[0]
+        assert meta["name"] == "hello world.txt" and meta["size"] == 11 and not meta["is_image"]
+        aid = meta["id"]
+        assert (tmp_path / "att" / aid).is_file()
+
+        # raw serving + traversal rejection
+        assert client.get(f"/api/chat/attachments/{aid}/raw").content == b"hello world"
+        assert client.get("/api/chat/attachments/../../etc/passwd/raw").status_code in (404, 422)
+        assert client.get("/api/chat/attachments/bad-id/raw").status_code == 422
+
+        # image extension classified
+        r2 = client.post("/api/chat/attachments", files={"files": ("shot.png", b"\x89PNG fake", "image/png")})
+        assert r2.json()[0]["is_image"] is True
+
+        # delete
+        assert client.delete(f"/api/chat/attachments/{aid}").json()["ok"] is True
+        assert not (tmp_path / "att" / aid).exists()
+
+
 def test_parse_jsonl_line():
     from app.hermes.chatrunner import parse_jsonl_line
     assert parse_jsonl_line("") is None

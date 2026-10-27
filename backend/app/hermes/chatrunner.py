@@ -13,9 +13,12 @@ finalized, so a client that reloads on that event always sees the final state.
 """
 import asyncio
 import json
+import os
 import subprocess
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from .. import config, db
@@ -26,6 +29,54 @@ _threads: dict[int, threading.Thread] = {}
 _subs: dict[int, list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
 _stops: set[int] = set()
 _lock = threading.Lock()
+
+# Per-file and total caps for text files embedded into the prompt.
+EMBED_FILE_CAP = 100_000
+EMBED_TOTAL_CAP = 400_000
+
+
+def _fmt_size(n: int) -> str:
+    return f"{n / 1024:.1f} KB" if n >= 1024 else f"{n} B"
+
+
+def build_prompt(text: str, attachments: list[dict]) -> str:
+    """Assemble the user prompt: message text + attachment contents/references.
+
+    Text files are embedded inline (fenced block, capped); images are referenced
+    by their local path so the agent can open them with its vision_analyze tool
+    (the gateway CLI path refuses `--image`, and browsers block file:// URLs).
+    """
+    parts = [text.strip()]
+    total = 0
+    for a in attachments or []:
+        name = a.get("name") or "file"
+        path = a.get("path") or ""
+        if a.get("is_image"):
+            parts.append(f"\n\n---\n[Image attached: {name} — local path: {path}]\n"
+                         f"View it with the vision_analyze tool (image_url = the local path above) "
+                         f"before answering questions about it.")
+            continue
+        try:
+            raw = Path(path).read_bytes()
+        except OSError:
+            parts.append(f"\n\n---\n[Attached file: {name} — could not be read]")
+            continue
+        try:
+            body = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            parts.append(f"\n\n---\n[Attached file: {name} ({_fmt_size(len(raw))}) — binary file, content not shown]")
+            continue
+        truncated = ""
+        if len(body) > EMBED_FILE_CAP:
+            body = body[:EMBED_FILE_CAP]
+            truncated = f"\n... [truncated at {EMBED_FILE_CAP} chars]"
+        total += len(body)
+        if total > EMBED_TOTAL_CAP:
+            parts.append(f"\n\n---\n[Attached file: {name} — skipped, total attachment budget exceeded]")
+            continue
+        lang = (Path(name).suffix or "").lstrip(".").lower() or "text"
+        parts.append(f"\n\n---\n[Attached file: {name} ({_fmt_size(len(raw))})]\n```{lang}\n{body.rstrip(chr(10))}{truncated}\n```")
+    return "".join(parts)
 
 
 def subscribe(msg_id: int, loop: asyncio.AbstractEventLoop) -> asyncio.Queue:
@@ -90,10 +141,23 @@ def parse_jsonl_line(line: str) -> Optional[dict]:
 
 
 def _runner(msg_id: int, conversation_id: str, text: str, model: str,
-            hermes_session_id: str, reasoning: str) -> None:
+            hermes_session_id: str, reasoning: str,
+            attachments: Optional[list[dict]] = None) -> None:
     if hermes_session_id:
         db.update_message(msg_id, hermes_session_id=hermes_session_id)
-    argv = [cli.hermes_bin(), "chat", "-q", text, "--oneshot", "--format", "stream-json"]
+    argv = [cli.hermes_bin(), "chat"]
+    query_file: Optional[Path] = None
+    if attachments:
+        # Embedded file contents can exceed the kernel's per-argv limit (128 KB)
+        # — hand the prompt to hermes through a file instead of an argument.
+        fd, qf = tempfile.mkstemp(prefix=f"dashmsg_{msg_id}_", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        query_file = Path(qf)
+        argv += ["--query-file", qf]
+    else:
+        argv += ["-q", text]
+    argv += ["--oneshot", "--format", "stream-json"]
     if hermes_session_id:
         argv += ["--resume", hermes_session_id]
     elif model:
@@ -178,12 +242,18 @@ def _runner(msg_id: int, conversation_id: str, text: str, model: str,
             _threads.pop(msg_id, None)
             _subs.pop(msg_id, None)
             _stops.discard(msg_id)
+        if query_file is not None:
+            try:
+                query_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def start_message(msg_id: int, conversation_id: str, text: str, model: str,
-                  hermes_session_id: str, reasoning: str = "") -> None:
+                  hermes_session_id: str, reasoning: str = "",
+                  attachments: Optional[list[dict]] = None) -> None:
     t = threading.Thread(target=_runner,
-                         args=(msg_id, conversation_id, text, model, hermes_session_id, reasoning),
+                         args=(msg_id, conversation_id, text, model, hermes_session_id, reasoning, attachments),
                          daemon=True)
     with _lock:
         _threads[msg_id] = t
